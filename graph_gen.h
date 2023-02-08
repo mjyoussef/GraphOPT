@@ -3,10 +3,9 @@
 
 #include <limits.h>
 #include <vector>
-#include <unordered_map>
-#include <unordered_set>
 #include <time.h>
 #include <cstdlib>
+#include <unordered_set>
 
 void shuffle(std::vector<int> &vect) {
     int j;
@@ -43,6 +42,44 @@ void generate_graph_helper(int v, std::vector< std::vector<int> > &graph, int *e
     }
 }
 
+std::vector< std::vector<int> > disjoint_filter(std::vector< std::vector<int> > &graph) {
+    std::unordered_set<int> not_connected;
+
+    // by default, we assume all vertices are not connected to the 
+    // 'main' graph
+    for (int i=0; i<graph.size(); i++) {
+        not_connected.insert(i);
+    }
+
+    for (int i=0; i<graph.size(); i++) {
+        for (int j=0; j<graph.size(); j++) {
+            if (graph[i][j] != INT_MAX) {
+                not_connected.erase(i);
+                not_connected.erase(j);
+            }
+        }
+    }
+
+    std::vector< std::vector<int> > refined_graph;
+    for (int i=0; i<graph.size(); i++) {
+        if (not_connected.count(i) > 0) {
+            continue;
+        }
+
+        std::vector<int> neighbors;
+        for (int j=0; j<graph.size(); j++) {
+            if (not_connected.count(j) > 0) {
+                continue;
+            }
+            neighbors.push_back(graph[i][j]);
+        }
+        refined_graph.push_back(neighbors);
+    }
+
+    //return graph;
+    return refined_graph;
+}
+
 std::vector< std::vector<int> > generate_graph(int size, int *edges, int directed, int weighted) {
     std::srand(std::time(NULL));
     std::vector< std::vector<int> > graph;
@@ -59,7 +96,7 @@ std::vector< std::vector<int> > generate_graph(int size, int *edges, int directe
     int v = std::rand() % size;
 
     generate_graph_helper(v, graph, edges, directed, weighted);
-    return graph;
+    return disjoint_filter(graph);
 }
 
 #endif
