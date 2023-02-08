@@ -1,5 +1,5 @@
 #include <iostream>
-#include "graph_gen.h"
+#include "graphs.h"
 #include <limits.h>
 
 using namespace std;

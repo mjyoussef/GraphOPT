@@ -7,6 +7,9 @@
 #include <cstdlib>
 #include <unordered_set>
 
+typedef Matrix std::vector< std::vector<int> >;
+typedef Tensor std::vector< std::vector< std::vector<int> > >;
+
 void shuffle(std::vector<int> &vect) {
     int j;
     for (int i=0; i<vect.size(); i++) {
@@ -15,7 +18,7 @@ void shuffle(std::vector<int> &vect) {
     }
 }
 
-void generate_graph_helper(int v, std::vector< std::vector<int> > &graph, int *edges, int directed, int weighted) {
+void generate_graph_helper(int v, Matrix &graph, int *edges, int directed, int weighted) {
 
     std::vector<int> remaining;
     std::vector<int> neighbors = graph[v];
@@ -42,7 +45,7 @@ void generate_graph_helper(int v, std::vector< std::vector<int> > &graph, int *e
     }
 }
 
-std::vector< std::vector<int> > disjoint_filter(std::vector< std::vector<int> > &graph) {
+Matrix &disjoint_filter(Matrix &graph) {
     std::unordered_set<int> not_connected;
 
     // by default, we assume all vertices are not connected to the 
@@ -60,7 +63,7 @@ std::vector< std::vector<int> > disjoint_filter(std::vector< std::vector<int> > 
         }
     }
 
-    std::vector< std::vector<int> > refined_graph;
+    Matrix refined_graph;
     for (int i=0; i<graph.size(); i++) {
         if (not_connected.count(i) > 0) {
             continue;
@@ -76,13 +79,12 @@ std::vector< std::vector<int> > disjoint_filter(std::vector< std::vector<int> > 
         refined_graph.push_back(neighbors);
     }
 
-    //return graph;
     return refined_graph;
 }
 
-std::vector< std::vector<int> > generate_graph(int size, int *edges, int directed, int weighted) {
+Matrix &generate_graph(int size, int *edges, int directed, int weighted) {
     std::srand(std::time(NULL));
-    std::vector< std::vector<int> > graph;
+    Matrix graph;
 
     for (int i=0; i<size; i++) {
         std::vector<int> neighbors;
