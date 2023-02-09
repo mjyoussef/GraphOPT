@@ -4,6 +4,7 @@
 #include <vector>
 #include <thread>
 #include <mutex>
+#include <condition_variable>
 #include <limits.h>
 #include <cstdlib>
 #include <time.h>
@@ -13,51 +14,86 @@ std::srand(std::time(NULL));
 
 // ########################## MIN-PLUS MATRIX MULTIPLICATION ################################
 
-// multiplying A and B and storing result in C
 struct MatrixInput {
-    std::mutex index_mut;
-    int index = 0;
+    int i;
+    int j;
+    int *visited;
 
+    std::mutex *c_m;
+    std::mutex *v_m;
+    std::mutex *lk_m,
+
+    std::condition_variable *this_var;
+    std::condition_variable *parent_var;
+    
     Matrix *A;
     Matrix *B;
     Matrix *C;
 
-    MatrixInput(Matrix *A_, Matrix *B_, Matrix *C_) {
+    MatrixInput(int i_, int j_, int *visited_, 
+                std::mutex *c_m_, std::mutex *v_m_, std::mutex *lk_m_,
+                std::condition_variable *this_var_, std::condition_variable *parent_var_,
+                Matrix *A_, Matrix *B_, Matrix *C_) {
+        i = i_;
+        j = j_;
+        visited = visited_;
+        c_m = c_m_;
+        v_m = v_m_;
+        lk_m = lk_m_;
+
+        this_var = this_var_;
+        parent_var = parent_var_;
+
         A = A_;
         B = B_;
         C = C_;
     }
 }
 
-void row_product_col(MatrixInput *input) {
-    Matrix &A = *(input->A);
-    Matrix &B = *(input->B);
-    Matrix &C = *(input->C);
+void entry_by_row(MatrixInput *input) {
 
-    index_mut.lock();
-    int i = input->index;
-    input->index += 1;
-    index_mut.unlock();
+    for (;;) {
+        std::unique_lock<std::mutex> lk(*(input->lk_m));
 
-    int row = i / C[0].size();
-    int col = i % C[0].size();
+        Matrix &A = *(input->A);
 
-    if (row >= C.size() || col >= C[row].size()) {
-        return;
+        while (visited >= A[0].size()) {
+            // sleep
+            (*(input->this_var)).wait(lk);
+        }
+
+        // task
+        int i = input->i;
+        int j = input->j;
+
+        Matrix &A = *(input->A);
+        Matrix &B = *(input->B);
+        Matrix &C = *(input->C);
+
+        int a = A[i][j];
+        long sum = 0;
+
+        for (int k=0; k<B[j].size(); k++) {
+            sum = a + B[j][k];
+            sum = min(INT_MAX, sum);
+
+            input->c_m.lock();
+            C[i][k] = min(C[i][k], sum);
+            input->c_m.unlock();
+        }
+
+        (*(input->v_m)).lock();
+        int visited = *(input->visited);
+        visited += 1;
+        (*(input->v_m)).unlock();
+
+        if (visited >= A[0].size()) {
+            (*(input->parent_var)).notify_one();
+        }
+
+        // this will put the thread to sleep
+        go = false;
     }
-
-    int min_sum = INT_MAX;
-    long sum;
-    for (int k=0; k<C[row].size(); k++) {
-        
-        // need to account for overflow
-        sum = A[row][k] + B[k][col];
-        sum = min(INT_MAX, sum);
-
-        min_sum = min(min_sum, (int) sum);
-    }
-
-    C[row][col] = min_sum;
 }
 
 Matrix &initialize_output(Matrix &A, Matrix &B) {
@@ -73,22 +109,63 @@ Matrix &initialize_output(Matrix &A, Matrix &B) {
     return C;
 }
 
+/*
+In the parent thread, we have a while loop that continues while visited is 
+less than the number of entries in a row of A. It puts all of the threads to work,
+and then it goes to sleep. When it wakes up, it moves onto the next row.
+*/
+
 Matrix &min_plus_product(Matrix &A, Matrix &B) {
+    Matrix &C = initialize_output(A, B);
+    std::mutex c_m;
 
-    // one thread for each row
-    int num_threads = max(A.size(), B[0].size());
-    pthread_t threads[num_threads];
+    int visited = 0;
+    std::mutex v_m;
 
-    Matrix C = initialize_output(A, B);
+    // condition variable for waking up *this* thread
+    std::condition_variable cv;
+    std::mutex cv_m;
 
-    MatrixInput input(&A, &B, &C);
 
-    for (int i=0; i<num_threads; i++) {
-        threads[i] = std::thread(&row_product_col, &input);
+    std::vector<thread> threads;
+    std::vector<MatrixInput> inputs;
+
+    int m = A.size();
+    int n = A[0].size();
+
+    for (int i=0; i<m; i++) {
+        std::unique_lock<std::mutex> lk(cv_m);
+
+        // dispatch worker threads
+        for (int j=0; j<n; j++) {
+            visited = 0;
+
+            if (i == 0) {
+                std::mutex lk_m;
+                std::condition_variable wv;
+
+                MatrixInput input(i, j, &visited, *c_m, *v_m, *lk_m, *wv, *cv, A, B, C);
+                threads.push(std::thread(&min_plus_product, *input));
+                inputs.push(input);
+            } else {
+                MatrixInput &input = inputs[j];
+                input.i = i;
+                input.j = j;
+
+                // wake up the worker thread
+                (*(input.wv)).notify_one();
+            }
+        }
+
+        while (visited < n) {
+            // sleep
+            cv.wait(lk);
+        }
     }
 
-    for (int i=0; i<num_threads; i++) {
-        threads[i].join();
+    // delete all of the child threads
+    for (int i=0; i<threads.size(); i++) {
+        threads[i].terminate();
     }
 
     return C;
@@ -130,7 +207,7 @@ Matrix &generate_matrix(int r, int c, int max) {
     return row;
 }
 
-// ###############################################################################
+// ##################################################################################
 
 
 // ######################## SHORTEST DISTANCE ALGORITHMS #########################
@@ -151,7 +228,7 @@ Matrix &all_pairs(Matrix &graph) {
     return shortest_paths;
 }
 
-Matrix &floyd_warshall(Matrix &graph) {
+Matrix &floyd_warshall_naive(Matrix &graph) {
     Matrix shortest_paths = graph;
 
     int size = graph.size();
@@ -170,6 +247,10 @@ Matrix &floyd_warshall(Matrix &graph) {
     }
 
     return shortest_paths;
+}
+
+Matrix &floyd_warshall_concurrent(Matrix &graph) {
+    return floyd_warshall_naive(graph);
 }
 
 // ###############################################################################
