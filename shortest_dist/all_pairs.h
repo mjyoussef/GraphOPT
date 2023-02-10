@@ -30,7 +30,7 @@ class CondVarContainer {
         last thread to complete its task can wake up the parent thread
         */
         int *visited;
-        std::mutex visited_m;
+        std::mutex *visited_m;
 
         Matrix *C; //output
         std::mutex *c_m;
@@ -41,9 +41,11 @@ class CondVarContainer {
         std::condition_variable *this_var;
         std::condition_variable *parent_var;
 
-        CondVarContainer(int *visited, std::mutex *visited_m_, 
+        CondVarContainer(int i_, int j_, int *visited, std::mutex *visited_m_, 
                         Matrix *C_, Matrix *A_, Matrix *B_,
                         std::condition_variable *parent_var) {
+            i = i_;
+            j = j_;
             visited = visited_;
             visited_m = visited_m_;
             C = C_;
@@ -104,7 +106,9 @@ void entry_by_row(CondVarContainer *input) {
             input->unlock_c();
         }
 
+        (*(input->visited_m)).lock()
         *(input->visited) += 1;
+        (*(input->visited_m)).unlock()
         
         Matrix &A = *(input->A);
 
@@ -161,9 +165,9 @@ Matrix &min_plus_product(Matrix &A, Matrix &B) {
             visited = 0;
 
             if (i == 0) {
-                CondVarContainer input(&visited, &v_m, &C, &A, &B, &cv);
+                CondVarContainer input(i, j, &visited, &v_m, &C, &A, &B, &cv);
 
-                threads.push(std::thread(&min_plus_product, *input));
+                threads.push(std::thread(&min_plus_product, &input));
                 inputs.push(input);
             } else {
                 CondVarContainer &input = inputs[j];
@@ -265,10 +269,90 @@ Matrix &floyd_warshall_naive(Matrix &graph) {
     return shortest_paths;
 }
 
+
+void update_path(CondVarContainer *input, int k) {
+    for (;;) {
+
+        int sleep = *(input->sleep);
+        while (sleep) {
+            // sleep
+            input->lock_worker();
+        }
+
+        // task
+        int i = input->i;
+        int j = input->j;
+
+        Matrix &C = *(input->C);
+
+        long sum = C[i][k] + C[k][j];
+        if (sum < C[i][j]) {
+            C[i][j] = sum;
+        }
+
+        (*(input->visited_m)).lock()
+        *(input->visited) += 1;
+        (*(input->visited_m)).unlock()
+        
+        Matrix &A = *(input->A);
+
+        if (*(input->visited) >= C[0].size()) {
+            input->wake_up_dispatcher();
+        }
+
+        sleep = 1; // task is finished so it can sleep
+    }
+}
+
 Matrix &floyd_warshall_concurrent(Matrix &graph) {
 
-    //return floyd_warshall_naive(graph);
+    Matrix shortest_paths = graph;
+
+    int size = graph.size();
+
+    std::vector<std::thread> threads;
+    std::vector<CondVarContainer> inputs;
+
+    int visited = 0;
+    std::mutex *visited_m;
+
+    std::condition_variable parent_var;
+    std::mutex parent_mutex;
+
+    for (int k=0; k<size; k++) {
+        for (int i=0; i<size; i++) {
+
+            unique_lock<std::mutex> lock(parent_mutex);
+
+            for (int j=0; j<size; j++) {
+                visited = 0;
+
+                if (i == 0) {
+                    CondVarContainer input(i, j, &visited, &visited_m, &shortest_paths, NULL, NULL, &parent_var);
+
+                    threads.push_back(thread(&update_path, &input));
+                    inputs.push_back(input);
+                } else {
+                    CondVarContainer &input = inputs[j];
+
+                    input.i = i;
+                    input.j = j;
+
+                    input->wake_up_worker();
+                }
+            }
+
+            while (visited < n) {
+                parent_var.wait(lock);
+            }
+        }
+    }
+
+    for (int i=0; i<threads.size(); i++) {
+        threads[i].terminate();
+    }
     
+    return shortest_paths;
 }
 
 // ###############################################################################
