@@ -4,6 +4,7 @@
 #include <vector>
 #include <thread>
 #include <mutex>
+#include <atomic>
 #include <condition_variable>
 #include <limits.h>
 #include <cstdlib>
@@ -14,52 +15,73 @@ std::srand(std::time(NULL));
 
 // ########################## MIN-PLUS MATRIX MULTIPLICATION ################################
 
-struct MatrixInput {
-    int i;
-    int j;
-    int *visited;
+// store mutexes and neccesary condition variables in here
+class CondVarContainer {
+    public:
+        int i;
+        int j;
 
-    std::mutex *c_m;
-    std::mutex *v_m;
-    std::mutex *lk_m,
+        std::mutex worker_mutex;
 
-    std::condition_variable *this_var;
-    std::condition_variable *parent_var;
-    
-    Matrix *A;
-    Matrix *B;
-    Matrix *C;
+        int sleep = 0;
 
-    MatrixInput(int i_, int j_, int *visited_, 
-                std::mutex *c_m_, std::mutex *v_m_, std::mutex *lk_m_,
-                std::condition_variable *this_var_, std::condition_variable *parent_var_,
-                Matrix *A_, Matrix *B_, Matrix *C_) {
-        i = i_;
-        j = j_;
-        visited = visited_;
-        c_m = c_m_;
-        v_m = v_m_;
-        lk_m = lk_m_;
+        /*
+        track the number of threads that have finished so that the 
+        last thread to complete its task can wake up the parent thread
+        */
+        int *visited;
+        std::mutex visited_m;
 
-        this_var = this_var_;
-        parent_var = parent_var_;
+        Matrix *C; //output
+        std::mutex *c_m;
 
-        A = A_;
-        B = B_;
-        C = C_;
-    }
+        Matrix *A;
+        Matrix *B;
+
+        std::condition_variable *this_var;
+        std::condition_variable *parent_var;
+
+        CondVarContainer(int *visited, std::mutex *visited_m_, 
+                        Matrix *C_, Matrix *A_, Matrix *B_,
+                        std::condition_variable *parent_var) {
+            visited = visited_;
+            visited_m = visited_m_;
+            C = C_;
+            A = A_;
+            B = B_;
+            parent_var = parent_var_;
+        }
+
+        void lock_worker() {
+            std::unique_lock< std::mutex > lock(worker_mutex);
+            (*this_var).wait(lock);
+        }
+
+        void wake_up_worker() {
+            sleep = 0;
+            (*this_var).notify_one();
+        }
+
+        void wake_up_dispatcher() {
+            (*parent_var).notify_one();
+        }
+
+        void lock_c() {
+            (*c_m).lock();
+        }
+
+        void unlock_c() {
+            (*c_m).unlock();
+        }
 }
 
-void entry_by_row(MatrixInput *input) {
-
+void entry_by_row(CondVarContainer *input) {
     for (;;) {
-        std::unique_lock<std::mutex> lk(*(input->lk_m));
 
-        Matrix &A = *(input->A);
-
-        while (visited >= A[0].size()) {
+        int sleep = *(input->sleep);
+        while (sleep) {
             // sleep
-            (*(input->this_var)).wait(lk);
+            input->lock_worker();
         }
 
         // task
@@ -77,22 +99,20 @@ void entry_by_row(MatrixInput *input) {
             sum = a + B[j][k];
             sum = min(INT_MAX, sum);
 
-            input->c_m.lock();
+            input->lock_c();
             C[i][k] = min(C[i][k], sum);
-            input->c_m.unlock();
+            input->unlock_c();
         }
 
-        (*(input->v_m)).lock();
-        int visited = *(input->visited);
-        visited += 1;
-        (*(input->v_m)).unlock();
+        *(input->visited) += 1;
+        
+        Matrix &A = *(input->A);
 
-        if (visited >= A[0].size()) {
-            (*(input->parent_var)).notify_one();
+        if (*(input->visited) >= A[0].size()) {
+            input->wake_up_dispatcher();
         }
 
-        // this will put the thread to sleep
-        go = false;
+        sleep = 1; // task is finished so it can sleep
     }
 }
 
@@ -128,7 +148,7 @@ Matrix &min_plus_product(Matrix &A, Matrix &B) {
 
 
     std::vector<thread> threads;
-    std::vector<MatrixInput> inputs;
+    std::vector<CondVarContainer> inputs;
 
     int m = A.size();
     int n = A[0].size();
@@ -141,19 +161,15 @@ Matrix &min_plus_product(Matrix &A, Matrix &B) {
             visited = 0;
 
             if (i == 0) {
-                std::mutex lk_m;
-                std::condition_variable wv;
+                CondVarContainer input(&visited, &v_m, &C, &A, &B, &cv);
 
-                MatrixInput input(i, j, &visited, *c_m, *v_m, *lk_m, *wv, *cv, A, B, C);
                 threads.push(std::thread(&min_plus_product, *input));
                 inputs.push(input);
             } else {
-                MatrixInput &input = inputs[j];
+                CondVarContainer &input = inputs[j];
                 input.i = i;
                 input.j = j;
-
-                // wake up the worker thread
-                (*(input.wv)).notify_one();
+                input->wake_up_worker();
             }
         }
 
@@ -250,7 +266,9 @@ Matrix &floyd_warshall_naive(Matrix &graph) {
 }
 
 Matrix &floyd_warshall_concurrent(Matrix &graph) {
-    return floyd_warshall_naive(graph);
+
+    //return floyd_warshall_naive(graph);
+    
 }
 
 // ###############################################################################
